@@ -110,7 +110,7 @@ class RDT1BInference:
         self.task_embedding = self.model.encode_instruction(task_description)
         self.model.reset()
 
-    def step(self, image: np.ndarray, task_description: Optional[str] = None) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    def step(self, image: np.ndarray, task_description: Optional[str] = None, proprioception: Optional[np.ndarray] = None) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
         """Process new observation and generate action"""
         if task_description is not None and task_description != self.task_description:
             self.reset(task_description)
@@ -131,7 +131,7 @@ class RDT1BInference:
 
         # Get model predictions
         with torch.no_grad():
-            actions = self.model.step(None, images, self.task_embedding)
+            actions = self.model.step(proprioception, images, self.task_embedding)
             actions = actions.squeeze(0).cpu().numpy()
         
         # Take every 4th action since RDT predicts interpolated steps
