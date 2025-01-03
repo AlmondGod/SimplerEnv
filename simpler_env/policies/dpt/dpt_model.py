@@ -37,6 +37,7 @@ class DiffusionPolicyTransformerInference:
         
         # Load checkpoint
         payload = torch.load(open(saved_model_path, 'rb'), pickle_module=dill)
+        print(f"payload keys: {payload.keys()}")
         cfg = payload['cfg']
         
         # Initialize workspace and load model
