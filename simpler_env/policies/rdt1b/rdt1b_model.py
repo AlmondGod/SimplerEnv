@@ -24,10 +24,51 @@ class RDT1BInference:
     ) -> None:
         print("is this even updating")
         # Load config and create model
-        config_path = os.path.abspath('/content/base.yaml')
-        print(config_path)
-        with open(config_path, "r") as fp:
-            self.config = yaml.safe_load(fp)
+        # config_path = os.path.join(os.path.dirname(saved_model_path), 'configs/base.yaml')
+        # config_path = os.path.abspath('/content/base.yaml')
+        # print(config_path)
+        # with open(config_path, "r") as fp:
+        #     self.config = yaml.safe_load(fp)
+
+        self.config = {
+            'common': {
+                'img_history_size': 2,
+                'action_chunk_size': 64,
+                'num_cameras': 3,
+                'state_dim': 128
+            },
+            'model': {
+                'lang_adaptor': 'mlp2x_gelu',
+                'img_adaptor': 'mlp2x_gelu',
+                'state_adaptor': 'mlp3x_gelu',
+                'lang_token_dim': 4096,
+                'img_token_dim': 1152,
+                'state_token_dim': 128,
+                'rdt': {
+                    'hidden_size': 2048,
+                    'depth': 28,
+                    'num_heads': 32,
+                    'cond_pos_embed_type': 'multimodal'
+                },
+                'noise_scheduler': {
+                    'type': 'ddpm',
+                    'num_train_timesteps': 1000,
+                    'num_inference_timesteps': 5,
+                    'beta_schedule': 'squaredcos_cap_v2',
+                    'prediction_type': 'sample',
+                    'clip_sample': False
+                },
+                'ema': {
+                    'update_after_step': 0,
+                    'inv_gamma': 1.0,
+                    'power': 0.75,
+                    'min_value': 0.0,
+                    'max_value': 0.9999
+                }
+            }
+        }
+
+
 
         # Initialize model with pretrained encoders
         self.model = create_model(
