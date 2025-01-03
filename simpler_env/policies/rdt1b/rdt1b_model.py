@@ -24,7 +24,6 @@ class RDT1BInference:
     ) -> None:
         print("is this even updating")
         # Load config and create model
-        # config_path = os.path.join(os.path.dirname(saved_model_path), 'configs/base.yaml')
         config_path = os.path.abspath('/content/base.yaml')
         print(config_path)
         with open(config_path, "r") as fp:
