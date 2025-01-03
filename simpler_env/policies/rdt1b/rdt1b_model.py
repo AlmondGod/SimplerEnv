@@ -23,7 +23,8 @@ class RDT1BInference:
         action_scale: float = 1.0,
     ) -> None:
         # Load config and create model
-        config_path = os.path.join(os.path.dirname(saved_model_path), 'configs/base.yaml')
+        # config_path = os.path.join(os.path.dirname(saved_model_path), 'configs/base.yaml')
+        config_path = '/content/base.yaml'
         with open(config_path, "r") as fp:
             self.config = yaml.safe_load(fp)
 
