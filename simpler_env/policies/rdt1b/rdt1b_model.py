@@ -22,6 +22,7 @@ class RDT1BInference:
         image_size: int = 384,  # SigLIP model input size
         action_scale: float = 1.0,
     ) -> None:
+        print("is this even updating")
         # Load config and create model
         # config_path = os.path.join(os.path.dirname(saved_model_path), 'configs/base.yaml')
         config_path = os.path.abspath('/content/base.yaml')
