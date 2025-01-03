@@ -85,7 +85,7 @@ class RDT1BInference:
             pretrained_text_encoder_name_or_path="google/t5-v1_1-xxl",
             pretrained_vision_encoder_name_or_path="google/siglip-so400m-patch14-384"
         )
-        self.model.eval()
+        self.model.reset()
 
         self.image_size = image_size
         self.action_scale = action_scale
