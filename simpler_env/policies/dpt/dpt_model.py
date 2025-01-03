@@ -12,6 +12,92 @@ import dill
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 from torchvision.models import resnet18
 
+from typing import Tuple, Sequence, Dict, Union, Optional, Callable
+import numpy as np
+import math
+import torch
+import torch.nn as nn
+import torchvision
+import collections
+import zarr
+from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
+from diffusers.training_utils import EMAModel
+from diffusers.optimization import get_scheduler
+from tqdm.auto import tqdm
+
+#@markdown ### **Vision Encoder**
+#@markdown
+#@markdown Defines helper functions:
+#@markdown - `get_resnet` to initialize standard ResNet vision encoder
+#@markdown - `replace_bn_with_gn` to replace all BatchNorm layers with GroupNorm
+
+def get_resnet(name:str, weights=None, **kwargs) -> nn.Module:
+    """
+    name: resnet18, resnet34, resnet50
+    weights: "IMAGENET1K_V1", None
+    """
+    # Use standard ResNet implementation from torchvision
+    func = getattr(torchvision.models, name)
+    resnet = func(weights=weights, **kwargs)
+
+    # remove the final fully connected layer
+    # for resnet18, the output dim should be 512
+    resnet.fc = torch.nn.Identity()
+    return resnet
+
+
+def replace_submodules(
+        root_module: nn.Module,
+        predicate: Callable[[nn.Module], bool],
+        func: Callable[[nn.Module], nn.Module]) -> nn.Module:
+    """
+    Replace all submodules selected by the predicate with
+    the output of func.
+
+    predicate: Return true if the module is to be replaced.
+    func: Return new module to use.
+    """
+    if predicate(root_module):
+        return func(root_module)
+
+    bn_list = [k.split('.') for k, m
+        in root_module.named_modules(remove_duplicate=True)
+        if predicate(m)]
+    for *parent, k in bn_list:
+        parent_module = root_module
+        if len(parent) > 0:
+            parent_module = root_module.get_submodule('.'.join(parent))
+        if isinstance(parent_module, nn.Sequential):
+            src_module = parent_module[int(k)]
+        else:
+            src_module = getattr(parent_module, k)
+        tgt_module = func(src_module)
+        if isinstance(parent_module, nn.Sequential):
+            parent_module[int(k)] = tgt_module
+        else:
+            setattr(parent_module, k, tgt_module)
+    # verify that all modules are replaced
+    bn_list = [k.split('.') for k, m
+        in root_module.named_modules(remove_duplicate=True)
+        if predicate(m)]
+    assert len(bn_list) == 0
+    return root_module
+
+def replace_bn_with_gn(
+    root_module: nn.Module,
+    features_per_group: int=16) -> nn.Module:
+    """
+    Relace all BatchNorm layers with GroupNorm.
+    """
+    replace_submodules(
+        root_module=root_module,
+        predicate=lambda x: isinstance(x, nn.BatchNorm2d),
+        func=lambda x: nn.GroupNorm(
+            num_groups=x.num_features//features_per_group,
+            num_channels=x.num_features)
+    )
+    return root_module
+
 class DiffusionPolicyTransformerInference:
     def __init__(
         self,
@@ -30,41 +116,56 @@ class DiffusionPolicyTransformerInference:
             action_scale: Scale factor for actions
             device: Device to run inference on
         """
-        self.device = torch.device(device)
-        self.image_size = image_size
-        self.action_scale = action_scale
-        self.policy_setup = policy_setup
-        
-        # Load checkpoint
-        payload = torch.load(open(saved_model_path, 'rb'), pickle_module=dill)
-        print(f"payload keys: {payload.keys()}")
-        cfg = payload['cfg']
-        
-        # Initialize workspace and load model
-        cls = hydra.utils.get_class(cfg._target_)
-        self.workspace = cls(cfg)
-        self.workspace.load_payload(payload, exclude_keys=None, include_keys=None)
-        
-        # Get policy from workspace
-        self.policy = self.workspace.model
-        if cfg.training.get('use_ema', False):
-            self.policy = self.workspace.ema_model
-            
-        self.policy.to(self.device)
-        self.policy.eval()
 
-        # Initialize observation window
-        self.obs_window = deque(maxlen=2)
-        self.task_embedding = None
-        self.task_description = None
+        # if you have multiple camera views, use seperate encoder weights for each view.
+        vision_encoder = get_resnet('resnet18')
 
-        # Initialize noise scheduler
-        self.noise_scheduler = DDPMScheduler(
-            num_train_timesteps=100,
-            beta_schedule='squaredcos_cap_v2',
-            clip_sample=True,
-            prediction_type='epsilon'
+        # IMPORTANT!
+        # replace all BatchNorm with GroupNorm to work with EMA
+        # performance will tank if you forget to do this!
+        vision_encoder = replace_bn_with_gn(vision_encoder)
+
+        # ResNet18 has output dim of 512
+        vision_feature_dim = 512
+        # agent_pos is 2 dimensional
+        lowdim_obs_dim = 2
+        # observation feature has 514 dims in total per step
+        obs_dim = vision_feature_dim + lowdim_obs_dim
+        action_dim = 2
+
+        # create network object
+        noise_pred_net = ConditionalUnet1D(
+            input_dim=action_dim,
+            global_cond_dim=obs_dim*obs_horizon
         )
+
+        # the final arch has 2 parts
+        nets = nn.ModuleDict({
+            'vision_encoder': vision_encoder,
+            'noise_pred_net': noise_pred_net
+        })
+
+        self.state_dict = torch.load(saved_model_path, map_location='cuda')
+        self.ema_nets = nets
+        self.ema_nets.load_state_dict(self.state_dict)
+
+        # self.device = torch.device(device)
+        # self.image_size = image_size
+        # self.action_scale = action_scale
+        # self.policy_setup = policy_setup
+        
+        # # Initialize observation window
+        # self.obs_window = deque(maxlen=2)
+        # self.task_embedding = None
+        # self.task_description = None
+
+        # # Initialize noise scheduler
+        # self.noise_scheduler = DDPMScheduler(
+        #     num_train_timesteps=100,
+        #     beta_schedule='squaredcos_cap_v2',
+        #     clip_sample=True,
+        #     prediction_type='epsilon'
+        # )
 
     def _resize_image(self, image: np.ndarray) -> np.ndarray:
         """Resize image to model's expected input size"""
@@ -81,29 +182,69 @@ class DiffusionPolicyTransformerInference:
 
     def step(self, image: np.ndarray, task_description: Optional[str] = None, proprioception: Optional[np.ndarray] = None) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
         """Process new observation and generate action"""
-        if task_description is not None and task_description != self.task_description:
-            self.reset(task_description)
-
-        # Update observation window
+        # Resize image if needed
         image = self._resize_image(image)
+        
+        # Update observation window
         self.obs_window.append({
-            'image': torch.from_numpy(image).float().to(self.device),
-            'agent_pos': torch.from_numpy(proprioception).float().to(self.device) if proprioception is not None else None
+            'agent_pos': proprioception.squeeze(0).cpu().numpy(),
+            "head_cam": torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0)
         })
 
-        # Run inference
-        with torch.no_grad():
-            actions = self.policy.predict_action(self.obs_window[-1])
-            actions = actions.cpu().numpy()
+        # Stack observations from window
+        images = torch.stack([x["head_cam"] for x in self.obs_window]).to(self.device)
+        agent_poses = torch.from_numpy(
+            np.stack([x["agent_pos"] for x in self.obs_window])
+        ).to(self.device)
 
-        # Format raw action output
+        # Get image features from vision encoder
+        with torch.no_grad():
+            image_features = self.ema_nets['vision_encoder'](
+                images.flatten(end_dim=1)
+            )
+            image_features = image_features.reshape(*images.shape[:2], -1)
+
+            # Concatenate with proprioception
+            obs_features = torch.cat([image_features, agent_poses], dim=-1)
+            obs_cond = obs_features.unsqueeze(0).flatten(start_dim=1)
+
+            # Initialize action from Gaussian noise
+            noisy_action = torch.randn(
+                (1, self.pred_horizon, self.action_dim), 
+                device=self.device
+            )
+            naction = noisy_action
+
+            # Initialize noise scheduler
+            self.noise_scheduler.set_timesteps(self.num_diffusion_iters)
+
+            # Denoise
+            for k in self.noise_scheduler.timesteps:
+                noise_pred = self.ema_nets['noise_pred_net'](
+                    sample=naction,
+                    timestep=k,
+                    global_cond=obs_cond
+                )
+                
+                # Inverse diffusion step (remove noise)
+                naction = self.noise_scheduler.step(
+                    model_output=noise_pred,
+                    timestep=k,
+                    sample=naction
+                ).prev_sample
+
+        # Get action prediction
+        naction = naction.detach().cpu().numpy()[0]
+        
+        # Process actions into the expected format
         raw_action = {
-            "world_vector": actions[:3],
-            "rotation_delta": actions[3:6],
-            "gripper_closedness_action": actions[6:7]
+            "world_vector": naction[0:3],
+            "rotation_delta": naction[3:6],
+            "gripper_closedness_action": naction[6:7],
+            "terminate_episode": np.array([0.0])  # Default to not terminating
         }
 
-        # Process action for environment
+        # Process the raw actions into the format expected by the environment
         processed_action = {}
         processed_action["world_vector"] = raw_action["world_vector"] * self.action_scale
         
@@ -118,7 +259,7 @@ class DiffusionPolicyTransformerInference:
         else:
             processed_action["gripper"] = raw_action["gripper_closedness_action"]
 
-        processed_action["terminate_episode"] = np.array([0.0])
+        processed_action["terminate_episode"] = raw_action["terminate_episode"]
 
         return raw_action, processed_action
 
