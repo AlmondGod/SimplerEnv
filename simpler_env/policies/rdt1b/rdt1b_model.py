@@ -65,10 +65,17 @@ class RDT1BInference:
                     'min_value': 0.0,
                     'max_value': 0.9999
                 }
-            }
+            },
+            'dataset': {
+                'buf_path': '/path/to/buffer',
+                'buf_num_chunks': 512,
+                'buf_chunk_size': 512,
+                'epsd_len_thresh_low': 32,
+                'epsd_len_thresh_high': 2048,
+                'image_aspect_ratio': 'pad',
+                'tokenizer_max_length': 1024
+            },
         }
-
-
 
         # Initialize model with pretrained encoders
         self.model = create_model(
