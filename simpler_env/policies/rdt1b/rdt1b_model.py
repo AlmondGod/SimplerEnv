@@ -7,8 +7,11 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from transforms3d.euler import euler2axangle
 
+import sys
+sys.path.append('/content/RoboticsDiffusionTransformer')
+
 # Import the RDT model creation function
-from roboticsdiffusiontransformer.scripts.maniskill_model import create_model, RoboticDiffusionTransformerModel
+from scripts.maniskill_model import create_model, RoboticDiffusionTransformerModel
 import yaml
 
 class RDT1BInference:
